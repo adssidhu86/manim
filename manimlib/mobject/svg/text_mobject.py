@@ -3,6 +3,7 @@ import hashlib
 import os
 import re
 import typing
+import warnings
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -10,14 +11,15 @@ import manimpango
 from manimlib.constants import *
 from manimlib.mobject.geometry import Dot
 from manimlib.mobject.svg.svg_mobject import SVGMobject
+from manimlib.mobject.types.vectorized_mobject import VGroup
 from manimlib.utils.config_ops import digest_config
 from manimlib.utils.customization import get_customization
 from manimlib.utils.directories import get_downloads_dir, get_text_dir
 from manimpango import PangoUtils
 from manimpango import TextSetting
 
-TEXT_MOB_SCALE_FACTOR = 0.001048
-
+TEXT_MOB_SCALE_FACTOR = 0.0076
+DEFAULT_LINE_SPACING_SCALE = 0.3
 
 class Text(SVGMobject):
     CONFIG = {
@@ -29,7 +31,7 @@ class Text(SVGMobject):
         "font": '',
         "gradient": None,
         "lsh": -1,
-        "size": 1,
+        "size": None,
         "font_size": 48,
         "tab_width": 4,
         "slant": NORMAL,
@@ -45,7 +47,17 @@ class Text(SVGMobject):
     def __init__(self, text, **config):
         self.full2short(config)
         digest_config(self, config)
-        self.lsh = self.size if self.lsh == -1 else self.lsh
+        if self.size:
+            warnings.warn(
+                "self.size has been deprecated and will "
+                "be removed in future.",
+                DeprecationWarning
+            )
+            self.font_size = self.size
+        if self.lsh == -1:
+            self.lsh = self.font_size + self.font_size * DEFAULT_LINE_SPACING_SCALE
+        else:
+            self.lsh = self.font_size + self.font_size * self.lsh
         text_without_tabs = text
         if text.find('\t') != -1:
             text_without_tabs = text.replace('\t', ' ' * self.tab_width)
@@ -66,7 +78,12 @@ class Text(SVGMobject):
 
         # anti-aliasing
         if self.height is None:
-            self.scale(TEXT_MOB_SCALE_FACTOR * self.font_size)
+            self.scale(TEXT_MOB_SCALE_FACTOR)
+
+        # Just a temporary hack to get better triangulation
+        # See pr #1552 for details
+        for i in self.submobjects:
+            i.insert_n_curves(len(i.get_points()))
 
     def remove_empty_path(self, file_name):
         with open(file_name, 'r') as fpr:
@@ -100,6 +117,19 @@ class Text(SVGMobject):
             index = self.text.find(word, index + len(word))
         return indexes
 
+    def get_parts_by_text(self, word):
+        return VGroup(*(
+            self[i:j]
+            for i, j in self.find_indexes(word)
+        ))
+
+    def get_part_by_text(self, word):
+        parts = self.get_parts_by_text(word)
+        if len(parts) > 0:
+            return parts[0]
+        else:
+            return None
+
     def full2short(self, config):
         for kwargs in [config, self.CONFIG]:
             if kwargs.__contains__('line_spacing_height'):
@@ -130,7 +160,7 @@ class Text(SVGMobject):
     def text2hash(self):
         settings = self.font + self.slant + self.weight
         settings += str(self.t2f) + str(self.t2s) + str(self.t2w)
-        settings += str(self.lsh) + str(self.size)
+        settings += str(self.lsh) + str(self.font_size)
         id_str = self.text + settings
         hasher = hashlib.sha256()
         hasher.update(id_str.encode())
@@ -184,8 +214,8 @@ class Text(SVGMobject):
 
     def text2svg(self):
         # anti-aliasing
-        size = self.size * 10
-        lsh = self.lsh * 10
+        size = self.font_size
+        lsh = self.lsh
 
         if self.font == '':
             self.font = get_customization()['style']['font']
@@ -196,8 +226,8 @@ class Text(SVGMobject):
         if os.path.exists(file_name):
             return file_name
         settings = self.text2settings()
-        width = 600
-        height = 400
+        width = DEFAULT_PIXEL_WIDTH
+        height = DEFAULT_PIXEL_HEIGHT
         disable_liga = self.disable_ligatures
         return manimpango.text2svg(
             settings,
@@ -211,6 +241,7 @@ class Text(SVGMobject):
             height,
             self.text,
         )
+
 
 @contextmanager
 def register_font(font_file: typing.Union[str, Path]):
@@ -240,8 +271,8 @@ def register_font(font_file: typing.Union[str, Path]):
     -----
     This method of adding font files also works with :class:`CairoText`.
     .. important ::
-        This method isn't available for macOS. Using this
-        method on macOS will raise an :class:`AttributeError`.
+        This method is available for macOS for ``ManimPango>=v0.2.3``. Using this
+        method with previous releases will raise an :class:`AttributeError` on macOS.
     """
 
     input_folder = Path(get_downloads_dir()).parent.resolve()
